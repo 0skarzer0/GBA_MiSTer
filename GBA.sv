@@ -40,8 +40,9 @@ module emu
 	output        CE_PIXEL,
 
 	//Video aspect ratio for HDMI. Most retro systems have ratio 4:3.
-	output [11:0] VIDEO_ARX,
-	output [11:0] VIDEO_ARY,
+	//if VIDEO_ARX[12] or VIDEO_ARY[12] is set then [11:0] contains scaled size instead of aspect ratio.
+	output [12:0] VIDEO_ARX,
+	output [12:0] VIDEO_ARY,
 
 	output  [7:0] VGA_R,
 	output  [7:0] VGA_G,
@@ -53,13 +54,17 @@ module emu
 	output [1:0]  VGA_SL,
 	output        VGA_SCALER, // Force VGA scaler
 
-	// Use framebuffer from DDRAM (USE_FB=1 in qsf)
+	input  [11:0] HDMI_WIDTH,
+	input  [11:0] HDMI_HEIGHT,
+
+`ifdef USE_FB
+	// Use framebuffer in DDRAM (USE_FB=1 in qsf)
 	// FB_FORMAT:
 	//    [2:0] : 011=8bpp(palette) 100=16bpp 101=24bpp 110=32bpp
 	//    [3]   : 0=16bits 565 1=16bits 1555
 	//    [4]   : 0=RGB  1=BGR (for 16/24/32 modes)
 	//
-	// FB_STRIDE either 0 (rounded to 256 bytes) or multiple of 16 bytes.
+	// FB_STRIDE either 0 (rounded to 256 bytes) or multiple of pixel size (in bytes)
 	output        FB_EN,
 	output  [4:0] FB_FORMAT,
 	output [11:0] FB_WIDTH,
@@ -77,6 +82,7 @@ module emu
 	output [23:0] FB_PAL_DOUT,
 	input  [23:0] FB_PAL_DIN,
 	output        FB_PAL_WR,
+`endif
 
 	output        LED_USER,  // 1 - ON, 0 - OFF.
 
@@ -91,10 +97,10 @@ module emu
 	// b[0]: osd button
 	output  [1:0] BUTTONS,
 
-   input         CLK_AUDIO, // 24.576 MHz
+	input         CLK_AUDIO, // 24.576 MHz
 	output [15:0] AUDIO_L,
 	output [15:0] AUDIO_R,
-	output        AUDIO_S, // 1 - signed audio samples, 0 - unsigned
+	output        AUDIO_S,   // 1 - signed audio samples, 0 - unsigned
 	output  [1:0] AUDIO_MIX, // 0 - no mix, 1 - 25%, 2 - 50%, 3 - 100% (mono)
 
 	//ADC
@@ -107,6 +113,7 @@ module emu
 	output        SD_CS,
 	input         SD_CD,
 
+`ifdef USE_DDRAM
 	//High latency DDR3 RAM interface
 	//Use for non-critical time purposes
 	output        DDRAM_CLK,
@@ -119,7 +126,9 @@ module emu
 	output [63:0] DDRAM_DIN,
 	output  [7:0] DDRAM_BE,
 	output        DDRAM_WE,
+`endif
 
+`ifdef USE_SDRAM
 	//SDRAM interface with lower latency
 	output        SDRAM_CLK,
 	output        SDRAM_CKE,
@@ -132,6 +141,20 @@ module emu
 	output        SDRAM_nCAS,
 	output        SDRAM_nRAS,
 	output        SDRAM_nWE,
+`endif
+
+`ifdef DUAL_SDRAM
+	//Secondary SDRAM
+	input         SDRAM2_EN,
+	output        SDRAM2_CLK,
+	output [12:0] SDRAM2_A,
+	output  [1:0] SDRAM2_BA,
+	inout  [15:0] SDRAM2_DQ,
+	output        SDRAM2_nCS,
+	output        SDRAM2_nCAS,
+	output        SDRAM2_nRAS,
+	output        SDRAM2_nWE,
+`endif
 
 	input         UART_CTS,
 	output        UART_RTS,
@@ -175,10 +198,6 @@ assign LED_POWER = 0;
 assign BUTTONS   = 0;
 assign VGA_SCALER= 0;
 
-wire [1:0] ar = status[33:32];
-assign VIDEO_ARX = (!ar) ? 12'd3 : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? 12'd2 : 12'd0;
-
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
 assign FB_EN      = status[21] || status[22];
@@ -215,11 +234,11 @@ wire reset = RESET | buttons[1] | status[0] | cart_download | bk_loading | hold_
 // 0         1         2         3         4         5         6
 // 0123456789012345678901234567890123456789012345678901234567890123
 // 0123456789ABCDEFGHIJKLMNOPQRSTUV0123456789ABCDEFGHIJKLMNOPQRSTUV
-// X XXXXXXXXXXXXXXXXX XXXXXXXXXXXX XX
+// X XXXXXXXXXXXXXXXXX XXXXXXXXXXXX XXXX
 
 `include "build_id.v"
 parameter CONF_STR = {
-	"GBA;;",
+	"GBA;SS3E000000:100000;",
 	"FS,GBA;",
  "-;",
    "C,Cheats;",
@@ -235,6 +254,7 @@ parameter CONF_STR = {
 	"h4H3RH,Save state (Alt-F1);",
 	"h4H3RI,Restore state (F1);",
 	"h4H3-;",
+
 	"P1,Video & Audio;",
 	"P1-;",
 	"P1o01,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
@@ -245,17 +265,21 @@ parameter CONF_STR = {
 	"P1OOQ,Modify Colors,Off,GBA 2.2,GBA 1.6,NDS 1.6,VBA 1.4,75%,50%,25%;",
 	"P1OK,Spritelimit,Off,On;",	 
 	"P1OB,Sync core to video,Off,On;",
+	"P1o23,Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
+
 	"P2,Hardware;",
 	"P2-;",
 	"H6P2OTV,Solar Sensor,0%,15%,30%,42%,55%,70%,85%,100%;",	
 	"H2P2OG,Turbo,Off,On;",
 	"P2OS,Homebrew BIOS(Reset!),Off,On;",
+
 	"P3,Miscellaneous;",
 	"P3-;",
 	"P3OEF,Storage,Auto,SDRAM,DDR3;",
 	"D5P3O5,Pause when OSD is open,Off,On;",
 	"P3OR,Rewind Capture,Off,On;",
-"-;",
+
+	"- ;",
 	"R0,Reset;",
 	"J1,A,B,L,R,Select,Start,FastForward,Rewind;",
 	"jn,A,B,L,R,Select,Start,X,X;",
@@ -1070,8 +1094,6 @@ always_comb begin
 	endcase
 end
 
-////////////////////////////  Color options  //////////////////////////////////
-
 reg [2:0] shadercolors;
 reg [1:0] desatcolors;
 always @(posedge clk_sys) begin
@@ -1088,14 +1110,7 @@ end
 video_mixer #(.LINE_LENGTH(520), .GAMMA(1)) video_mixer
 (
 	.*,
-
-	.clk_vid(CLK_VIDEO), //48MHz
-	.ce_pix_out(CE_PIXEL),
-
-	.scanlines(0),
 	.hq2x(scale==1),
-	.mono(0),
-
 	.HSync(hs),
 	.VSync(vs),
 	.HBlank(hbl),
@@ -1103,6 +1118,20 @@ video_mixer #(.LINE_LENGTH(520), .GAMMA(1)) video_mixer
 	.R(r_out),
 	.G(g_out),
 	.B(b_out)
+);
+
+wire [1:0] ar = status[33:32];
+video_freak video_freak
+(
+	.*,
+	.VGA_DE_IN(VGA_DE),
+	.VGA_DE(),
+
+	.ARX((!ar) ? 12'd3 : (ar - 1'd1)),
+	.ARY((!ar) ? 12'd2 : 12'd0),
+	.CROP_SIZE(0),
+	.CROP_OFF(0),
+	.SCALE(status[35:34])
 );
 
 
